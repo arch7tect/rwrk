@@ -6,28 +6,23 @@ use reqwest::Client;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-/// High-performance task processor with time-bound execution
 #[derive(Parser, Debug)]
 #[command(name = "rwrk")]
 #[command(about = "Process millions of tasks with timeout", long_about = None)]
 struct Config {
-    /// Base URL to make GET requests to (use {id} as placeholder)
+    /// Base URL (use {id} as placeholder)
     #[arg(short = 'u', long, default_value = "https://httpbin.org/uuid")]
     url: String,
 
-    /// Number of tasks to process
     #[arg(short = 'n', long, default_value = "5000000")]
     total_tasks: usize,
 
-    /// Timeout in seconds
     #[arg(short = 't', long, default_value = "10")]
     timeout_secs: u64,
 
-    /// Number of worker tasks (default: num_cpus * 4)
     #[arg(short = 'w', long)]
     worker_count: Option<usize>,
 
-    /// Log level (trace, debug, info, warn, error)
     #[arg(short = 'l', long, default_value = "info")]
     log_level: String,
 }
