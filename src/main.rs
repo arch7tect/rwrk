@@ -11,7 +11,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 #[command(about = "Process millions of tasks with timeout", long_about = None)]
 struct Config {
     /// Base URL (use {id} as placeholder)
-    #[arg(short = 'u', long, default_value = "https://httpbin.org/uuid")]
+    #[arg(short = 'u', long)]
     url: String,
 
     #[arg(short = 'n', long, default_value = "5000000")]
