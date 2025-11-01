@@ -2,9 +2,16 @@ use tokio::time::{sleep, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
 use clap::Parser;
-use reqwest::Client;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use hyper::Request;
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use hyper_util::rt::TokioExecutor;
+use hyper_rustls::HttpsConnector;
+use http_body_util::{BodyExt, Empty};
+use bytes::Bytes;
+
+type HttpsClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
 
 #[derive(Parser, Debug)]
 #[command(name = "rwrk")]
@@ -50,16 +57,19 @@ async fn main() {
     info!("Running {}s test @ {}", config.timeout_secs, config.url);
     info!("  {} workers and {} max tasks", worker_count, config.total_tasks);
 
-    let client = Arc::new(
-        Client::builder()
-            .pool_max_idle_per_host(worker_count)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Duration::from_secs(60))
-            .http1_only()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client")
-    );
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .expect("Failed to load native roots")
+        .https_only()
+        .enable_http1()
+        .build();
+
+    let client: HttpsClient = Client::builder(TokioExecutor::new())
+        .pool_max_idle_per_host(worker_count)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build(https);
+
+    let client = Arc::new(client);
     let cancel_token = CancellationToken::new();
 
     let cancel_token_timeout = cancel_token.clone();
@@ -101,24 +111,34 @@ async fn main() {
                     break;
                 }
 
-                let request = if has_placeholder {
+                let url = if has_placeholder {
                     let id = start_id + offset as u64;
-                    let url = base_url.replace("{id}", &id.to_string());
-                    client.get(&url)
+                    base_url.replace("{id}", &id.to_string())
                 } else {
-                    client.get(base_url.as_ref())
+                    base_url.as_ref().clone()
                 };
 
-                match request.send().await {
+                let req = match Request::builder()
+                    .uri(&url)
+                    .body(Empty::<Bytes>::new())
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        stats.completed += 1;
+                        continue;
+                    }
+                };
+
+                match client.request(req).await {
                     Ok(response) => {
                         let success = response.status().is_success();
-                        match response.bytes().await {
+                        match response.into_body().collect().await {
                             Ok(body) => {
                                 stats.completed += 1;
                                 if success {
                                     stats.successful += 1;
                                 }
-                                stats.bytes += body.len() as u64;
+                                stats.bytes += body.to_bytes().len() as u64;
                             }
                             Err(_) => {
                                 stats.completed += 1;
