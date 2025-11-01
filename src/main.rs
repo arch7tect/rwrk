@@ -55,7 +55,8 @@ async fn main() {
             .pool_max_idle_per_host(worker_count)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
-            .timeout(Duration::from_secs(5))
+            .http1_only()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to build HTTP client")
     );
