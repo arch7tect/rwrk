@@ -38,7 +38,9 @@ wrk -t64 -c704 -d30s https://exposeme.org/
 
 ## Implementation
 
-- HTTP client: Hyper (low-level)
+- HTTP client: Hyper (low-level, direct protocol implementation)
 - Async runtime: Tokio
 - Connection pooling: Matches worker count
 - Metrics: Response body bytes (rwrk) vs full response (wrk)
+
+**Note**: rwrk uses Hyper directly instead of reqwest (high-level HTTP client) for maximum performance. This provides ~4% better throughput by avoiding abstraction overhead.
