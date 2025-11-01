@@ -102,7 +102,7 @@ async fn main() {
             let mut stats = WorkerStats::default();
 
             for offset in 0..my_requests {
-                if offset % 100 == 0 && cancel_token.is_cancelled() {
+                if cancel_token.is_cancelled() {
                     break;
                 }
 
