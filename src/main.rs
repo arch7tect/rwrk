@@ -132,13 +132,19 @@ async fn main() {
                 match client.request(req).await {
                     Ok(response) => {
                         let success = response.status().is_success();
+                        let mut header_bytes = 0u64;
+                        for (name, value) in response.headers() {
+                            header_bytes += name.as_str().len() as u64 + value.len() as u64 + 4;
+                        }
+                        header_bytes += 12;
+
                         match response.into_body().collect().await {
                             Ok(body) => {
                                 stats.completed += 1;
                                 if success {
                                     stats.successful += 1;
                                 }
-                                stats.bytes += body.to_bytes().len() as u64;
+                                stats.bytes += body.to_bytes().len() as u64 + header_bytes;
                             }
                             Err(_) => {
                                 stats.completed += 1;
