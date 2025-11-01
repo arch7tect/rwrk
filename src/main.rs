@@ -157,11 +157,13 @@ async fn main() {
     let mb = total_bytes as f64 / 1_048_576.0;
     let errors = total_completed - total_successful;
 
-    info!("  {} requests in {:.2}s, {:.2}MB read",
-        total_completed, elapsed.as_secs_f64(), mb);
+    info!("  {} requests in {:.2}s, {:.2}MB read", total_completed, elapsed.as_secs_f64(), mb);
     if errors > 0 {
         info!("  Non-2xx responses: {}", errors);
     }
-    info!("Requests/sec:   {:.2}", throughput);
+    info!("Requests/sec:      {:.2}", throughput);
     info!("Transfer/sec:      {:.2}MB", bandwidth_mb);
+    if total_completed < config.total_tasks as u64 {
+        info!("Completed:         {}/{} tasks", total_completed, config.total_tasks);
+    }
 }
