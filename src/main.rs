@@ -61,6 +61,7 @@ async fn main() {
             .pool_max_idle_per_host(worker_count)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
+            .timeout(Duration::from_secs(5))
             .build()
             .expect("Failed to build HTTP client")
     );
@@ -106,14 +107,15 @@ async fn main() {
                     break;
                 }
 
-                let url = if has_placeholder {
+                let request = if has_placeholder {
                     let id = start_id + offset as u64;
-                    base_url.replace("{id}", &id.to_string())
+                    let url = base_url.replace("{id}", &id.to_string());
+                    client.get(&url)
                 } else {
-                    base_url.as_ref().clone()
+                    client.get(base_url.as_ref())
                 };
 
-                match client.get(&url).send().await {
+                match request.send().await {
                     Ok(response) => {
                         let success = response.status().is_success();
                         match response.bytes().await {
