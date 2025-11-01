@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
 use clap::Parser;
 use reqwest::Client;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[derive(Parser, Debug)]
@@ -47,14 +47,8 @@ async fn main() {
     let worker_count = config.worker_count.unwrap_or_else(|| num_cpus::get() * 32);
 
     let start = Instant::now();
-    info!("Starting high-performance HTTP task processor");
-    info!(url = %config.url, "Target URL");
-    info!(
-        total_tasks = config.total_tasks,
-        workers = worker_count,
-        timeout_secs = config.timeout_secs,
-        "Configuration"
-    );
+    info!("Running {}s test @ {}", config.timeout_secs, config.url);
+    info!("  {} workers and {} max tasks", worker_count, config.total_tasks);
 
     let client = Arc::new(
         Client::builder()
@@ -71,7 +65,6 @@ async fn main() {
     let timeout_secs = config.timeout_secs;
     tokio::spawn(async move {
         sleep(Duration::from_secs(timeout_secs)).await;
-        warn!("Timeout reached, cancelling all tasks");
         cancel_token_timeout.cancel();
     });
 
@@ -159,37 +152,16 @@ async fn main() {
 
     let elapsed = start.elapsed();
 
-    let success_rate = if total_completed > 0 {
-        (total_successful as f64 / total_completed as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let mb = total_bytes as f64 / 1_048_576.0;
-    let bytes_display = if mb >= 1.0 {
-        format!("{:.2} MB", mb)
-    } else {
-        format!("{:.2} KB", total_bytes as f64 / 1024.0)
-    };
-
     let throughput = total_completed as f64 / elapsed.as_secs_f64();
     let bandwidth_mb = (total_bytes as f64 / 1_048_576.0) / elapsed.as_secs_f64();
+    let mb = total_bytes as f64 / 1_048_576.0;
+    let errors = total_completed - total_successful;
 
-    info!("=== Statistics ===");
-    info!(
-        total_time_secs = %format!("{:.2}", elapsed.as_secs_f64()),
-        tasks_completed = total_completed,
-        "Execution summary"
-    );
-    info!(
-        successful_requests = total_successful,
-        success_rate = %format!("{:.1}%", success_rate),
-        bytes_transferred = %bytes_display,
-        "Request results"
-    );
-    info!(
-        throughput = %format!("{:.0} req/sec", throughput),
-        bandwidth = %format!("{:.2} MB/sec", bandwidth_mb),
-        "Performance"
-    );
+    info!("  {} requests in {:.2}s, {:.2}MB read",
+        total_completed, elapsed.as_secs_f64(), mb);
+    if errors > 0 {
+        info!("  Non-2xx responses: {}", errors);
+    }
+    info!("Requests/sec:   {:.2}", throughput);
+    info!("Transfer/sec:      {:.2}MB", bandwidth_mb);
 }
