@@ -51,7 +51,7 @@ async fn main() {
             .unwrap_or_else(|_| EnvFilter::new(&config.log_level)))
         .init();
 
-    let worker_count = config.worker_count.unwrap_or_else(|| num_cpus::get() * 32);
+    let worker_count = config.worker_count.unwrap_or_else(|| num_cpus::get() * 64);
 
     let start = Instant::now();
     info!("Running {}s test @ {}", config.timeout_secs, config.url);
