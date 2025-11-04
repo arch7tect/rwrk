@@ -1,15 +1,15 @@
-use tokio::time::{sleep, Duration, Instant};
-use tokio_util::sync::CancellationToken;
-use std::sync::Arc;
+use bytes::Bytes;
 use clap::Parser;
-use tracing::info;
-use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+use http_body_util::{BodyExt, Empty};
 use hyper::Request;
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_util::rt::TokioExecutor;
-use hyper_rustls::HttpsConnector;
-use http_body_util::{BodyExt, Empty};
-use bytes::Bytes;
+use std::sync::Arc;
+use tokio::time::{Duration, Instant, sleep};
+use tokio_util::sync::CancellationToken;
+use tracing::info;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 type HttpsClient = Client<HttpsConnector<HttpConnector>, Empty<Bytes>>;
 
@@ -32,6 +32,14 @@ struct Config {
 
     #[arg(short = 'l', long, default_value = "info")]
     log_level: String,
+
+    /// Max idle connections per host (defaults to worker count)
+    #[arg(short = 'c', long)]
+    pool_max_idle_per_host: Option<usize>,
+
+    /// Idle connection timeout in seconds
+    #[arg(short = 'i', long, default_value = "90")]
+    pool_idle_timeout: u64,
 }
 
 #[derive(Default)]
@@ -47,26 +55,35 @@ async fn main() {
 
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&config.log_level)))
+        .with(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level)),
+        )
         .init();
 
-    let worker_count = config.worker_count.unwrap_or_else(|| num_cpus::get() * 56);
+    let worker_count = config.worker_count.unwrap_or_else(|| num_cpus::get() * 48);
+    let pool_max_idle = config.pool_max_idle_per_host.unwrap_or(worker_count * 2);
 
     let start = Instant::now();
     info!("Running {}s test @ {}", config.timeout_secs, config.url);
-    info!("  {} workers and {} max tasks", worker_count, config.total_tasks);
+    info!(
+        "  {} workers and {} max tasks",
+        worker_count, config.total_tasks
+    );
+    info!(
+        "  pool: {} max idle/host, {}s idle timeout",
+        pool_max_idle, config.pool_idle_timeout
+    );
 
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .expect("Failed to load native roots")
-        .https_only()
+        .https_or_http()
         .enable_http1()
         .build();
 
     let client: HttpsClient = Client::builder(TokioExecutor::new())
-        .pool_max_idle_per_host(worker_count)
-        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(pool_max_idle)
+        .pool_idle_timeout(Duration::from_secs(config.pool_idle_timeout))
         .build(https);
 
     let client = Arc::new(client);
@@ -107,10 +124,6 @@ async fn main() {
             let mut stats = WorkerStats::default();
 
             for offset in 0..my_requests {
-                if cancel_token.is_cancelled() {
-                    break;
-                }
-
                 let url = if has_placeholder {
                     let id = start_id + offset as u64;
                     base_url.replace("{id}", &id.to_string())
@@ -118,10 +131,7 @@ async fn main() {
                     base_url.as_ref().clone()
                 };
 
-                let req = match Request::builder()
-                    .uri(&url)
-                    .body(Empty::<Bytes>::new())
-                {
+                let req = match Request::builder().uri(&url).body(Empty::<Bytes>::new()) {
                     Ok(r) => r,
                     Err(_) => {
                         stats.completed += 1;
@@ -129,21 +139,42 @@ async fn main() {
                     }
                 };
 
-                match client.request(req).await {
+                let response_result = tokio::select! {
+                    result = client.request(req) => result,
+                    _ = cancel_token.cancelled() => break,
+                };
+
+                match response_result {
                     Ok(response) => {
                         let success = response.status().is_success();
-                        match response.into_body().collect().await {
-                            Ok(body) => {
-                                stats.completed += 1;
-                                if success {
-                                    stats.successful += 1;
+                        let mut body = response.into_body();
+                        let mut total_bytes = 0u64;
+                        let mut body_failed = false;
+
+                        while let Some(frame) = body.frame().await {
+                            match frame {
+                                Ok(frame) => {
+                                    if let Some(chunk) = frame.data_ref() {
+                                        total_bytes += chunk.len() as u64;
+                                    }
                                 }
-                                stats.bytes += body.to_bytes().len() as u64;
-                            }
-                            Err(_) => {
-                                stats.completed += 1;
+                                Err(_) => {
+                                    body_failed = true;
+                                    break;
+                                }
                             }
                         }
+
+                        stats.completed += 1;
+
+                        if body_failed {
+                            continue;
+                        }
+
+                        if success {
+                            stats.successful += 1;
+                        }
+                        stats.bytes += total_bytes;
                     }
                     Err(_) => {
                         stats.completed += 1;
@@ -169,22 +200,31 @@ async fn main() {
         }
     }
 
-    cancel_token.cancel();
-
     let elapsed = start.elapsed();
+
+    cancel_token.cancel();
+    drop(client);
 
     let throughput = total_completed as f64 / elapsed.as_secs_f64();
     let bandwidth_mb = (total_bytes as f64 / 1_048_576.0) / elapsed.as_secs_f64();
     let mb = total_bytes as f64 / 1_048_576.0;
     let errors = total_completed - total_successful;
 
-    info!("  {} requests in {:.2}s, {:.2}MB read", total_completed, elapsed.as_secs_f64(), mb);
+    info!(
+        "  {} requests in {:.2}s, {:.2}MB read",
+        total_completed,
+        elapsed.as_secs_f64(),
+        mb
+    );
     if errors > 0 {
         info!("  Non-2xx responses: {}", errors);
     }
     info!("Requests/sec:      {:.2}", throughput);
     info!("Transfer/sec:      {:.2}MB", bandwidth_mb);
     if total_completed < config.total_tasks as u64 {
-        info!("Completed:         {}/{} tasks", total_completed, config.total_tasks);
+        info!(
+            "Completed:         {}/{} tasks",
+            total_completed, config.total_tasks
+        );
     }
 }
